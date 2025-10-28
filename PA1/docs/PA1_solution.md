@@ -631,31 +631,161 @@ output_path = "output/teddy_disparity.png"
 
 ## 8. TODO6: Joint Bilateral Filter (고급)
 
+> **참고**: 이 섹션의 더 상세한 설명은 `PA1/docs/PA1_JBF_detailed_explanation.md`를 참고하세요.
+
 ### 8.1 이론적 배경
 
-**Joint Bilateral Filter (JBF)**는 guide 이미지를 참고하여 edge를 보존하면서 smoothing하는 필터입니다.
+#### 8.1.1 문제 상황: Box Filter의 한계
 
-**Bilateral Filter 복습:**
-- **Spatial kernel (Gs)**: 거리에 따라 가중치 감소
-- **Range kernel (Gr)**: 픽셀 값 차이에 따라 가중치 감소
-- 두 커널의 곱으로 edge-preserving smoothing
+Box Filter로 cost를 aggregation하면 **물체 경계**에서 문제가 발생합니다:
 
-**Joint Bilateral Filter:**
-- Filtering 대상: Cost volume
-- Guide image: 원본 grayscale 이미지 (left)
-- Guide의 edge 정보를 이용해 cost를 smoothing
-- **효과**: 물체 경계에서 disparity가 섞이지 않음
+```
+물체 A (가까움, d=50)  |  배경 B (멀리, d=10)
+━━━━━━━━━━━━━━━━━━━━┃━━━━━━━━━━━━━━━━━━
+                    경계
+
+Box Filter 적용 시:
+- 경계 픽셀: 물체 A의 cost + 배경 B의 cost를 모두 섞음
+- 결과: 잘못된 중간 disparity (d=30) 선택
+- 문제: 경계가 흐려짐 (bleeding)
+```
+
+**해결책**: 물체 경계를 넘어 cost가 섞이지 않도록!
+
+#### 8.1.2 Guide 이미지란?
+
+**Guide 이미지**: 필터링할 때 **참고**하는 이미지
+
+```python
+# PA1에서의 사용
+left_image = load_gray("reindeer_left.png")  # Guide 이미지
+cost_vol = build_cost_volume(left, right)    # 필터링 대상
+
+agg = joint_bilateral_filter(
+    cost_vol,     # 이것을 부드럽게 하되
+    left_image    # 이것을 참고해서 (경계 정보)
+)
+```
+
+**왜 left_image를 guide로?**
+- Left 이미지에는 **물체의 경계**가 명확히 보임
+- 경계 = 밝기가 급격히 변하는 곳
+- 예: 순록 몸통 (밝기 100) vs 배경 하늘 (밝기 200)
+
+**Guide의 역할**:
+```
+"밝기가 비슷한 픽셀끼리만 cost를 섞어라!"
+```
+
+#### 8.1.3 공간 가우시안 (Gs) - "거리" 기반
+
+**정의**: 픽셀 간 **물리적 거리**에 따른 가중치
+
+```python
+# 중심 픽셀 (x, y)에서 주변 픽셀 (x', y')까지의 거리
+distance = √((x - x')² + (y - y')²)
+
+# 공간 가우시안
+Gs = exp(-distance² / (2 × sigma_s²))
+```
+
+**시각적 예시 (중심 픽셀 기준 5×5):**
+```
+Gs 가중치 (sigma_s=1.0):
+  0.01  0.04  0.14  0.04  0.01
+  0.04  0.14  0.61  0.14  0.04
+  0.14  0.61 [1.00] 0.61  0.14  ← 중심이 가장 높음
+  0.04  0.14  0.61  0.14  0.04
+  0.01  0.04  0.14  0.04  0.01
+
+특징: 거리가 가까울수록 가중치 높음 (대칭적)
+```
+
+#### 8.1.4 범위 가우시안 (Gr) - "픽셀 값 차이" 기반
+
+**정의**: **Guide 이미지의 픽셀 값 차이**에 따른 가중치
+
+```python
+# 중심 픽셀의 guide 값
+g_center = guide[y, x]  # 예: 0.2 (정규화된 밝기)
+
+# 주변 픽셀의 guide 값
+g_neighbor = guide[y', x']  # 예: 0.8
+
+# 값 차이
+value_diff = |g_center - g_neighbor|  # 0.6
+
+# 범위 가우시안
+Gr = exp(-value_diff² / (2 × sigma_r²))
+```
+
+**시각적 예시:**
+```
+Guide 이미지 (정규화 0-1):
+  0.2  0.2  0.2 | 0.8  0.8  0.8
+  0.2  0.2 [X] | 0.8  0.8  0.8   ← X=0.2
+  0.2  0.2  0.2 | 0.8  0.8  0.8
+  물체 A         | 배경 B
+               ↑ 경계
+
+Gr 가중치 (sigma_r=0.1, X=0.2 기준):
+  1.0  1.0  1.0 | 0.0  0.0  0.0
+  1.0  1.0 [1.0]| 0.0  0.0  0.0   ← 비슷한 값만 높음
+  1.0  1.0  1.0 | 0.0  0.0  0.0
+
+특징:
+- 왼쪽 (0.2, 물체): 값 비슷 → Gr 높음 (1.0)
+- 오른쪽 (0.8, 배경): 값 다름 → Gr 거의 0
+- 경계를 넘으면 가중치 급감!
+```
+
+#### 8.1.5 Joint Bilateral Filter의 작동 원리
+
+**최종 가중치 = Gs × Gr**
+
+```python
+weight(x, y, x', y') = Gs(거리) × Gr(guide 값 차이)
+
+# 두 조건 모두 만족해야 높은 가중치:
+# 1. 거리 가까워야 함 (Gs 높음)
+# 2. Guide 값 비슷해야 함 (Gr 높음)
+```
+
+**경계 픽셀에서의 동작:**
+```
+물체 A (guide=0.2) | 배경 B (guide=0.8)
+━━━━━━━━━━━━━━━━┃━━━━━━━━━━━━━━━━
+                경계 픽셀 X
+
+X의 왼쪽 픽셀들 (물체 A):
+- Gs: 높음 (거리 가까움)
+- Gr: 높음 (guide 값 비슷, 0.2≈0.2)
+- 최종: 높음 → cost 섞임 ✅
+
+X의 오른쪽 픽셀들 (배경 B):
+- Gs: 높음 (거리 가까움)
+- Gr: 거의 0 (guide 값 다름, 0.2≠0.8)
+- 최종: 거의 0 → cost 안 섞임 ❌
+
+결과: 물체 A의 cost만 사용 → 경계 보존!
+```
 
 **수식:**
 ```
-agg_cost(x, y, d) = Σ cost(x', y', d) × Gs(||p - p'||) × Gr(|I(p) - I(p')|) / W
+agg_cost(x, y, d) = Σ cost(x', y', d) × Gs × Gr / W
+
 여기서:
-- p = (x, y), p' = (x', y'): 픽셀 위치
-- I(p): guide 이미지의 픽셀 값
-- Gs: 공간 가우시안
-- Gr: 범위 가우시안
-- W: 정규화 상수 (가중치 합)
+- cost(x', y', d): 주변 픽셀의 cost 값 (필터링 대상)
+- Gs = exp(-픽셀거리² / 2σ_s²)
+- Gr = exp(-guide값차이² / 2σ_r²)  ← Guide 이미지 참고!
+- W = Σ(Gs × Gr): 정규화 상수
 ```
+
+**핵심**:
+1. Cost volume을 부드럽게 하되
+2. Guide (left 이미지)를 참고
+3. Guide에서 값이 비슷한 픽셀끼리만 섞음
+4. 경계를 넘으면 값이 다르므로 안 섞임
 
 ### 8.2 파이프라인 위치
 
