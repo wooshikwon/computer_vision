@@ -22,15 +22,15 @@ def build_cost_volume(left, right, max_disp=64):
 
     for d in range(D):
         #TODO1: image shift
-        r_shift = 
+        r_shift = shift_right_image(right_f, d)
 
         #TODO2: SAD
-        diff = 
+        diff = np.abs(left_f - r_shift)
 
         cost_vol[:, :, d] = diff
 
         if d > 0:
-            cost_vol[:, :d, d] = 1e6
+            cost_vol[:, :d, d] = 1e6 # 우측 이미지를 d만큼 shift해, zero padding된 영역의 cost를 무한대로 설정
 
     return cost_vol
 
@@ -40,12 +40,12 @@ def aggregate_cost_volume_box(cost_vol, window_size=7):
     k = (window_size, window_size)
     for d in range(D):
         #TODO3: aggregate cost volume
-        agg[:, :, d] = 
+        agg[:, :, d] = cv2.boxFilter(cost_vol[:, :, d], -1, k) # cv.BoxFilter(d번째 disparity의 cost map, 데이터 타입 유지(-1), 윈도우 사이즈 k)
     return agg
 
 def select_disparity(agg_cost_vol):
     #TODO4: select disparity
-    disp = 
+    disp = np.argmin(agg_cost_vol, axis=2) # disparity 차원에서의 최소값 인덱스 반환
     disp = disp.astype(np.float32)
     return disp
 
@@ -74,7 +74,7 @@ def joint_bilateral_slice_numpy(src, guide, win_radius=3, sigma_s=3.0, sigma_r=0
     return out
 
 def aggregate_cost_volume_joint_bilateral_numpy(cost_vol, guide_gray, win_radius=3, sigma_s=3.0, sigma_r=0.1):
-    guide = (guide_gray.astype(np.float32) / 255.0).copy()
+    guide = (guide_gray.astype(np.float32) / 255.0).copy() # 0-1 정규화
     H, W, D = cost_vol.shape
     out = np.empty_like(cost_vol)
     for d in range(D):

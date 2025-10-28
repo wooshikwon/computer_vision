@@ -6,9 +6,11 @@
 3. [일반 필터 vs Bilateral Filter](#3-일반-필터-vs-bilateral-filter)
 4. [공간 가우시안 (Gs)](#4-공간-가우시안-gs)
 5. [범위 가우시안 (Gr)](#5-범위-가우시안-gr)
-6. [Joint Bilateral Filter](#6-joint-bilateral-filter)
-7. [PA1에서의 적용](#7-pa1에서의-적용)
-8. [실전 예시](#8-실전-예시)
+6. [Bilateral Filter 완전 예시](#6-bilateral-filter-완전-예시)
+7. [Joint Bilateral Filter: 핵심 차이](#7-joint-bilateral-filter-핵심-차이)
+8. [PA1에서의 적용](#8-pa1에서의-적용)
+9. [실전 예시](#9-실전-예시)
+10. [왜 경계에서 섞이지 않나?](#10-왜-경계에서-섞이지-않나)
 
 ---
 
@@ -84,8 +86,8 @@ agg = aggregate_cost_volume_joint_bilateral_numpy(
 Left 이미지 (Guide):
   50  50  50 | 200 200 200    ← 밝기 값
   물체 A      | 배경 B
-              ↑
-           경계 (밝기 급변)
+             ↑
+         경계 (밝기 급변)
 
 Cost volume (필터링 대상):
   [cost_A]  [cost_A] | [cost_B] [cost_B]
@@ -123,12 +125,12 @@ Cost volume (필터링 대상):
 ```
 이미지:
   10  10  10 | 100 100
-  10  10 [X]| 100 100    ← X 위치에서 필터링
+  10  10  [X]| 100 100    ← X 위치에서 필터링
   10  10  10 | 100 100
 
 Box Filter (3×3):
   가중치: 모두 1/9
-  결과: (10×4 + 100×5) / 9 = 60
+  결과: (10×5 + 100×4) / 9 = 60
        ↑ 10과 100이 섞임!
 ```
 
@@ -151,7 +153,7 @@ Box Filter (3×3):
 ```
 이미지:
   10  10  10 | 100 100
-  10  10 [X]| 100 100    ← X=10
+  10  10  [X]| 100 100    ← X=10
   10  10  10 | 100 100
 
 Bilateral Filter:
@@ -200,11 +202,11 @@ Gs(x, y, x', y') = exp( -((x-x')² + (y-y')²) / (2 × sigma_s²) )
   √8  √5  √4  √5  √8
 
 Gs 가중치 (sigma_s=1.0):
-  0.01 0.04 0.14 0.04 0.01
-  0.04 0.14 0.61 0.14 0.04
-  0.14 0.61 [1.0] 0.61 0.14   ← 중심 가장 높음
-  0.04 0.14 0.61 0.14 0.04
-  0.01 0.04 0.14 0.04 0.01
+  0.01  0.04  0.14  0.04  0.01
+  0.04  0.14  0.61  0.14  0.04
+  0.14  0.61  [1.0] 0.61  0.14   ← 중심 가장 높음
+  0.04  0.14  0.61  0.14  0.04
+  0.01  0.04  0.14  0.04  0.01
 
 특징:
 - 중심에 가까울수록 가중치 높음
@@ -292,11 +294,323 @@ sigma_r = 0.5   # 큰 값
 
 ---
 
-## 6. Joint Bilateral Filter
+## 6. Bilateral Filter 완전 예시
 
-### 6.1 Bilateral Filter와의 차이
+### 6.1 Gs와 Gr을 어떻게 섞는가?
+
+**핵심: 곱셈으로 결합합니다!**
+
+```python
+weight = Gs × Gr
+
+# 두 조건 모두 만족해야 높은 가중치:
+# 1. 거리 가까워야 함 (Gs 높음)
+# 2. 픽셀 값 비슷해야 함 (Gr 높음)
+```
+
+### 6.2 구체적 계산 예시 (3×3 Window)
+
+**원본 이미지 (grayscale, 정규화 0-1):**
+```
+  0.4  0.4  0.4 | 0.8  0.8
+  0.4  0.4  [X] | 0.8  0.8   ← X=0.4를 필터링
+  0.4  0.4  0.4 | 0.8  0.8
+  물체 A         | 배경 B
+                ↑ 경계
+```
+
+**Step 1: Gs 계산 (거리, sigma_s=1.0)**
+```
+중심 (1,1) 기준 거리:
+  √2   √1   √2
+  √1    0   √1
+  √2   √1   √2
+
+Gs (sigma_s=1.0):
+  0.14  0.61  0.14
+  0.61  1.00  0.61
+  0.14  0.61  0.14
+```
+
+**Step 2: Gr 계산 (값 차이, sigma_r=0.1)**
+```
+주변 픽셀 값:
+  0.4  0.4  0.8
+  0.4 [0.4] 0.8
+  0.4  0.4  0.8
+
+중심 0.4와의 값 차이:
+  0.0  0.0  0.4
+  0.0 [0.0] 0.4
+  0.0  0.0  0.4
+
+Gr (sigma_r=0.1):
+  1.0  1.0  ~0.0    ← 0.4 차이 → Gr ≈ 0
+  1.0  1.0  ~0.0
+  1.0  1.0  ~0.0
+```
+
+**Step 3: 최종 가중치 = Gs × Gr (곱셈!)**
+```
+  0.14×1.0  0.61×1.0  0.14×0.0
+  0.61×1.0  1.00×1.0  0.61×0.0
+  0.14×1.0  0.61×1.0  0.14×0.0
+
+=
+
+  0.14  0.61  0.0    ← 오른쪽(배경)은 0!
+  0.61  1.00  0.0
+  0.14  0.61  0.0
+```
+
+**Step 4: 가중 평균 계산**
+```python
+분자 = 0.4×0.14 + 0.4×0.61 + 0.8×0.0 +
+       0.4×0.61 + 0.4×1.00 + 0.8×0.0 +
+       0.4×0.14 + 0.4×0.61 + 0.8×0.0
+     = 0.4 × (0.14 + 0.61 + 0.61 + 1.0 + 0.61 + 0.14 + 0.61)
+     = 0.4 × 3.72
+     = 1.488
+
+분모 = 0.14 + 0.61 + 0.0 + 0.61 + 1.0 + 0.0 + 0.14 + 0.61 + 0.0
+     = 3.72
+
+결과 = 1.488 / 3.72 = 0.4 ✅
+
+배경(0.8) 값은 전혀 섞이지 않음!
+```
+
+### 6.3 핵심 정리
+
+**Bilateral Filter의 동작:**
+1. **Gs**: 거리 가까운 픽셀에 높은 가중치
+2. **Gr**: 값 비슷한 픽셀에 높은 가중치
+3. **weight = Gs × Gr**: 두 조건 모두 만족해야 높은 가중치
+4. **가중 평균**: `Σ(image × weight) / Σ(weight)`
+
+**중요한 점:**
+```
+Gr 계산에 사용하는 이미지 = 필터링 대상 이미지 (같은 것!)
+
+image = [0.4, 0.4, 0.4, 0.8, 0.8, 0.8]
+filtered = bilateral_filter(image)
+
+Gr = exp(-(image[중심] - image[주변])² / 2σ_r²)
+           ↑           ↑
+        같은 이미지!
+```
+
+---
+
+## 7. Joint Bilateral Filter: 핵심 차이
+
+### 7.1 가장 중요한 차이 단 한 줄!
+
+```
+Bilateral Filter:     필터링할 이미지 = Gr 계산에 사용하는 이미지 (같음)
+Joint Bilateral Filter: 필터링할 이미지 ≠ Gr 계산에 사용하는 이미지 (다름!)
+```
+
+### 7.2 왜 Joint가 필요한가?
+
+**문제 상황:**
+```
+필터링하고 싶은 것: Cost volume (disparity별 매칭 비용)
+경계 정보가 있는 곳: 원본 이미지 (left image)
+
+Cost volume에는 경계가 보이지 않음!
+→ Gr을 cost로 계산하면 경계를 찾을 수 없음
+→ 원본 이미지(guide)를 참고해야 함
+```
+
+**해결책: Joint Bilateral Filter**
+```
+필터링 대상: cost volume
+Gr 계산 기준: guide (left image) ← 경계 정보 명확!
+```
+
+### 7.3 수식 비교
 
 **Bilateral Filter:**
+```python
+# 필터링 대상 image 자체를 보고 Gr 계산
+filtered(x,y) = Σ image(x',y') × Gs × Gr / W
+
+여기서:
+Gs = exp(-거리² / 2σ_s²)
+Gr = exp(-(image(x,y) - image(x',y'))² / 2σ_r²)
+                ↑             ↑
+             같은 이미지!
+```
+
+**Joint Bilateral Filter:**
+```python
+# 다른 이미지 guide를 보고 Gr 계산
+filtered(x,y) = Σ image(x',y') × Gs × Gr / W
+
+여기서:
+Gs = exp(-거리² / 2σ_s²)
+Gr = exp(-(guide(x,y) - guide(x',y'))² / 2σ_r²)
+                ↑             ↑
+           다른 이미지 (guide)!
+```
+
+### 7.4 코드 비교
+
+**Bilateral Filter (일반):**
+```python
+def bilateral_filter(image, sigma_s, sigma_r):
+    filtered = zeros_like(image)
+
+    for 각 픽셀 (x, y):
+        center_value = image[y, x]  # ★ image 자신
+
+        for 주변 픽셀 (x', y'):
+            # Gs: 거리
+            Gs = exp(-distance² / (2×sigma_s²))
+
+            # Gr: 같은 이미지의 값 차이 ★
+            neighbor_value = image[y', x']
+            Gr = exp(-(center_value - neighbor_value)² / (2×sigma_r²))
+
+            weight = Gs × Gr
+            filtered[y, x] += image[y', x'] × weight
+
+    return filtered / normalize
+```
+
+**Joint Bilateral Filter:**
+```python
+def joint_bilateral_filter(image, guide, sigma_s, sigma_r):
+    filtered = zeros_like(image)
+
+    for 각 픽셀 (x, y):
+        center_guide = guide[y, x]  # ★ guide 사용!
+
+        for 주변 픽셀 (x', y'):
+            # Gs: 거리 (동일)
+            Gs = exp(-distance² / (2×sigma_s²))
+
+            # Gr: 다른 이미지(guide)의 값 차이 ★★
+            neighbor_guide = guide[y', x']
+            Gr = exp(-(center_guide - neighbor_guide)² / (2×sigma_r²))
+
+            weight = Gs × Gr
+            filtered[y, x] += image[y', x'] × weight  # image 필터링
+
+    return filtered / normalize
+```
+
+**핵심 차이:**
+```python
+# Bilateral
+Gr = exp(-(image[중심] - image[주변])² / 2σ_r²)
+
+# Joint Bilateral
+Gr = exp(-(guide[중심] - guide[주변])² / 2σ_r²)
+           ↑             ↑
+        다른 이미지!
+```
+
+### 7.5 PA1에서 왜 Joint를 사용해야 하나?
+
+**만약 Bilateral Filter를 cost volume에 적용한다면:**
+```python
+# Cost volume 자체를 보고 Gr 계산
+cost_slice = cost_vol[:, :, d]  # 예: disparity=30
+
+filtered = bilateral_filter(cost_slice)
+# Gr = exp(-(cost[중심] - cost[주변])²)
+
+문제:
+1. Cost 값의 차이 ≠ 경계
+   - 물체와 배경의 cost가 우연히 비슷하면 섞임 ❌
+   - 같은 물체 내에서도 cost가 다르면 안 섞임 ❌
+
+2. Cost는 disparity마다 다름
+   - d=10일 때: 물체 cost=50, 배경 cost=10
+   - d=30일 때: 물체 cost=5, 배경 cost=50
+   → 일관성 없음!
+
+결과: 엉망!
+```
+
+**Joint Bilateral Filter를 사용하면:**
+```python
+# Guide (left image)를 보고 Gr 계산
+cost_slice = cost_vol[:, :, d]
+guide = left_image  # 경계 정보 명확!
+
+filtered = joint_bilateral_filter(cost_slice, guide)
+# Gr = exp(-(guide[중심] - guide[주변])²)
+
+효과:
+1. Guide의 경계 정보 활용
+   - 물체 영역: guide 값 비슷 → cost 섞음 ✅
+   - 배경 영역: guide 값 다름 → cost 안 섞음 ✅
+
+2. Cost 값과 무관
+   - d가 얼마든, cost가 얼마든
+   - Guide가 경계를 일관되게 알려줌
+   → 항상 정확!
+
+결과: 완벽!
+```
+
+### 7.6 시각적 비교
+
+**상황:**
+```
+Left image (guide):
+  물체: 밝기 100
+  배경: 밝기 200
+
+Cost volume (d=30):
+  물체: cost 5
+  배경: cost 50
+```
+
+**Bilateral Filter on Cost (잘못됨):**
+```
+중심 픽셀이 물체 영역:
+  중심 cost = 5
+  물체 cost = 5  → 차이 0  → Gr = 1.0 ✅
+  배경 cost = 50 → 차이 45 → Gr ≈ 0.0 ✅
+
+→ 우연히 잘 작동 (cost가 많이 달라서)
+
+BUT! d=20일 때 cost가:
+  물체: 30
+  배경: 35  → 차이 5만 나면?
+  → Gr = 0.9 → 섞임! ❌
+```
+
+**Joint Bilateral Filter (올바름):**
+```
+중심 픽셀이 물체 영역:
+  중심 guide = 100
+  물체 guide = 100 → 차이 0   → Gr = 1.0 ✅
+  배경 guide = 200 → 차이 100 → Gr ≈ 0.0 ✅
+
+→ 항상 잘 작동 (guide가 일관되게 경계 표시)
+
+Cost가 어떻든 상관없음:
+  d=10, 20, 30, 40...
+  cost가 5, 30, 50, 100 아무거나
+  → Guide 100 vs 200이면 무조건 안 섞음! ✅
+```
+
+### 7.7 핵심 요약
+
+| 측면 | Bilateral | Joint Bilateral |
+|------|-----------|----------------|
+| **필터링 대상** | image | image |
+| **Gs 계산** | 거리 | 거리 (동일) |
+| **Gr 계산** | **image 자신의 값** | **guide의 값** ★ |
+| **PA1 적용** | ❌ 부적합 (cost 불안정) | ✅ 완벽 (guide 일관) |
+| **용도** | 일반 이미지 smoothing | 경계 정보 참고 smoothing |
+
+**Bilateral Filter와의 차이:**
 ```python
 # 필터링 대상 이미지 = 픽셀 값 비교 기준 이미지
 bilateral_filter(image, image)
@@ -312,53 +626,11 @@ joint_bilateral_filter(cost_vol, left_image)
                      필터링 대상  Guide (참고용)
 ```
 
-### 6.2 핵심 아이디어
-
-```
-Cost volume을 부드럽게 하고 싶은데,
-어디까지 섞을지를 left_image가 알려줌!
-```
-
-**예시:**
-```
-Left image (guide):
-  물체 픽셀: 50
-  배경 픽셀: 200
-
-Cost volume (필터링 대상):
-  물체 cost: [10, 5, 3, 8, ...]
-  배경 cost: [25, 30, 28, 26, ...]
-
-Joint Bilateral Filter:
-1. Cost volume의 물체 영역을 부드럽게 할 때
-2. Guide (left image)를 보니 값이 50인 영역끼리만 섞어야 함
-3. 값이 200인 배경과는 섞지 않음
-→ 경계 보존!
-```
-
-### 6.3 전체 수식
-
-```python
-filtered_cost(x, y) = Σ cost(x', y') × Gs × Gr / W
-
-여기서:
-- cost(x', y'): 주변 픽셀의 cost 값 (필터링 대상)
-- Gs: exp(-거리² / 2σ_s²)
-      거리 = √((x-x')² + (y-y')²)  ← 픽셀 간 물리적 거리
-
-- Gr: exp(-값차이² / 2σ_r²)
-      값차이 = |guide(x,y) - guide(x',y')|  ← Guide 이미지의 값 차이!
-
-- W: 정규화 상수 = Σ(Gs × Gr)
-```
-
-**핵심**: Gr은 **guide 이미지의 값 차이**를 봄!
-
 ---
 
-## 7. PA1에서의 적용
+## 8. PA1에서의 적용
 
-### 7.1 전체 흐름
+### 8.1 전체 흐름
 
 ```
 1. Left 이미지 로딩
@@ -378,7 +650,7 @@ filtered_cost(x, y) = Σ cost(x', y') × Gs × Gr / W
    )
 ```
 
-### 7.2 각 Disparity 슬라이스마다 적용
+### 8.2 각 Disparity 슬라이스마다 적용
 
 ```python
 # Cost volume은 3D (H×W×D)
@@ -396,7 +668,7 @@ for d in range(64):  # 각 disparity에 대해
     agg_cost_vol[:, :, d] = filtered_slice
 ```
 
-### 7.3 구체적 예시
+### 8.3 구체적 예시
 
 ```
 순록 이미지 (left, guide):
@@ -417,9 +689,9 @@ Cost volume (d=30 슬라이스):
 
 ---
 
-## 8. 실전 예시
+## 9. 실전 예시
 
-### 8.1 Python 코드로 이해하기
+### 9.1 Python 코드로 이해하기
 
 ```python
 def joint_bilateral_slice_numpy(src, guide, win_radius=3, sigma_s=3.0, sigma_r=0.1):
@@ -465,7 +737,7 @@ def joint_bilateral_slice_numpy(src, guide, win_radius=3, sigma_s=3.0, sigma_r=0
     return out
 ```
 
-### 8.2 단계별 예시
+### 9.2 단계별 예시
 
 **입력:**
 ```
@@ -527,7 +799,7 @@ result = 10 × 3.0 / 3.0 = 10
 → 경계 보존 성공!
 ```
 
-### 8.3 Box Filter와 비교
+### 9.3 Box Filter와 비교
 
 **같은 상황에서 Box Filter:**
 ```python
@@ -553,9 +825,9 @@ result = 10
 
 ---
 
-## 9. 왜 경계에서 Disparity가 섞이지 않나?
+## 10. 왜 경계에서 섞이지 않나?
 
-### 9.1 물리적 의미
+### 10.1 물리적 의미
 
 ```
 실제 3D 장면:
@@ -564,7 +836,7 @@ result = 10
                    경계
 ```
 
-### 9.2 Box Filter의 문제
+### 10.2 Box Filter의 문제
 
 ```
 경계 픽셀에서:
@@ -574,7 +846,7 @@ result = 10
                              중간 값 (d=30)이 선택됨 ❌
 ```
 
-### 9.3 Joint Bilateral Filter의 해결
+### 10.3 Joint Bilateral Filter의 해결
 
 ```
 경계 픽셀에서:
@@ -589,7 +861,7 @@ result = 10
   경계: 선명하게 구분!
 ```
 
-### 9.4 핵심 원리
+### 10.4 핵심 원리
 
 **Guide 이미지의 역할:**
 ```
@@ -599,11 +871,7 @@ result = 10
 → 각 물체의 disparity 보존
 ```
 
----
-
-## 10. 요약
-
-### 10.1 핵심 개념
+### 10.5 핵심 개념 요약
 
 | 개념 | 의미 | 측정 대상 |
 |------|------|----------|
@@ -612,7 +880,7 @@ result = 10
 | **범위 가우시안 (Gr)** | 값 차이 기반 가중치 | **Guide 이미지의 픽셀 값 차이** |
 | **가중치** | Gs × Gr | 거리 가깝고 + 값 비슷하면 높음 |
 
-### 10.2 작동 원리
+### 10.6 작동 원리
 
 ```
 1. Cost volume을 부드럽게 하고 싶음
@@ -622,7 +890,7 @@ result = 10
 5. 결과: 경계 보존된 부드러운 cost volume
 ```
 
-### 10.3 PA1에서의 효과
+### 10.7 PA1에서의 효과
 
 **Box Filter:**
 - 빠름 ⚡
@@ -634,9 +902,7 @@ result = 10
 - 물체와 배경의 disparity가 섞이지 않음
 - 더 정확한 깊이 추정
 
----
-
-## 11. 마지막 질문 답변
+### 10.8 마지막 질문 답변
 
 ### Q1: Guide 이미지란?
 **A**: 필터링할 때 참고하는 이미지. 물체 경계 정보를 알려줌.
