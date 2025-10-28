@@ -53,9 +53,9 @@ def joint_bilateral_slice_numpy(src, guide, win_radius=3, sigma_s=3.0, sigma_r=0
     H, W = src.shape
     out = np.zeros_like(src)
 
-    ksize = 2 * win_radius + 1
-    ys, xs = np.mgrid[-win_radius:win_radius+1, -win_radius:win_radius+1]
-    Gs = np.exp(-(xs**2 + ys**2) / (2 * sigma_s**2)).astype(np.float32)
+    ksize = 2 * win_radius + 1 # 7x7 window
+    ys, xs = np.mgrid[-win_radius:win_radius+1, -win_radius:win_radius+1] # ys는 행 좌표 7x7, xs는 열 좌표 7x7
+    Gs = np.exp(-(xs**2 + ys**2) / (2 * sigma_s**2)).astype(np.float32) # 중앙 픽셀을 기준으로 한 공간 가우시안 커널
 
     pad = win_radius
     src_p = np.pad(src, pad, mode='reflect')
@@ -66,11 +66,11 @@ def joint_bilateral_slice_numpy(src, guide, win_radius=3, sigma_s=3.0, sigma_r=0
             g0 = gui_p[y+pad, x+pad]
             src_patch = src_p[y:y+ksize, x:x+ksize]
             gui_patch = gui_p[y:y+ksize, x:x+ksize]
-            Gr = np.exp(-((gui_patch - g0)**2) / (2 * sigma_r**2)).astype(np.float32)
-            Wgt = Gs * Gr
-            s = (src_patch * Wgt).sum()
-            w = Wgt.sum() + 1e-8
-            out[y, x] = s / w
+            Gr = np.exp(-((gui_patch - g0)**2) / (2 * sigma_r**2)).astype(np.float32) # 범위 가우시안 커널
+            Wgt = Gs * Gr # 가중치
+            s = (src_patch * Wgt).sum() # 가중치 평균 (numerator)
+            w = Wgt.sum() + 1e-8 # 정규화 (denominator)
+            out[y, x] = s / w # 가중치 평균 (output)
     return out
 
 def aggregate_cost_volume_joint_bilateral_numpy(cost_vol, guide_gray, win_radius=3, sigma_s=3.0, sigma_r=0.1):
