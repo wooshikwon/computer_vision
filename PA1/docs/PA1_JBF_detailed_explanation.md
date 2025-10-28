@@ -19,13 +19,14 @@
 스테레오 매칭에서 cost를 aggregation할 때 **Box Filter**를 사용하면:
 
 ```
-물체 A (가까움)  |  배경 B (멀리)
-disparity=50     |  disparity=10
+물체 A (가까움)   |  배경 B (멀리)
+disparity=50   |  disparity=10
 ━━━━━━━━━━━━━━━┃━━━━━━━━━━━━━━━
-                경계
+              경계
 ```
 
 **Box Filter 적용 시:**
+
 ```
 경계 근처 픽셀:
 - 물체 A의 cost (d=50)
